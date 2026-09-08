@@ -1,0 +1,249 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ExtractionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Work {
+  id         String  @id @default(cuid())
+  openAlexId String  @unique
+  doi        String? @unique
+  title      String
+
+  publicationDate DateTime?
+  publicationYear Int?
+  type            String?
+  language        String?
+
+  abstract String?
+
+  citedByCount Int @default(0)
+
+  isOpenAccess Boolean?
+  isRetracted  Boolean?
+
+  landingPageUrl String?
+  pdfUrl         String?
+
+  sourceId String?
+  source   Source? @relation(fields: [sourceId], references: [id])
+
+  authors   WorkAuthor[]
+  keywords  WorkKeyword[]
+  topics    WorkTopic[]
+  locations WorkLocation[]
+
+  extractionWorks ExtractionJobWork[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([publicationYear])
+  @@index([type])
+  @@index([citedByCount])
+  @@index([isOpenAccess])
+  @@index([isRetracted])
+}
+
+model Author {
+  id          String  @id @default(cuid())
+  openAlexId  String  @unique
+  orcid       String?
+  displayName String
+
+  works        WorkAuthor[]
+  institutions AuthorInstitution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([displayName])
+}
+
+model Institution {
+  id          String @id @default(cuid())
+  openAlexId  String @unique
+  displayName String
+
+  ror         String?
+  countryCode String?
+  countryName String?
+
+  authors AuthorInstitution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([countryCode])
+}
+
+model WorkAuthor {
+  id String @id @default(cuid())
+
+  workId   String
+  authorId String
+
+  authorPosition Int?
+
+  work   Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  author Author @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@unique([workId, authorId])
+  @@index([authorId])
+}
+
+model AuthorInstitution {
+  id String @id @default(cuid())
+
+  authorId      String
+  institutionId String
+
+  author      Author      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@unique([authorId, institutionId])
+  @@index([institutionId])
+}
+
+model Source {
+  id          String @id @default(cuid())
+  openAlexId  String @unique
+  displayName String
+
+  issn String?
+  type String?
+
+  works Work[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([displayName])
+}
+
+model Keyword {
+  id          String @id @default(cuid())
+  displayName String
+  score       Float?
+
+  works WorkKeyword[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([displayName])
+}
+
+model WorkKeyword {
+  id String @id @default(cuid())
+
+  workId    String
+  keywordId String
+
+  work    Work    @relation(fields: [workId], references: [id], onDelete: Cascade)
+  keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@unique([workId, keywordId])
+  @@index([keywordId])
+}
+
+model Topic {
+  id          String @id @default(cuid())
+  openAlexId  String @unique
+  displayName String
+
+  subfield String?
+  field    String?
+  domain   String?
+  score    Float?
+
+  works WorkTopic[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model WorkTopic {
+  id String @id @default(cuid())
+
+  workId  String
+  topicId String
+
+  work  Work  @relation(fields: [workId], references: [id], onDelete: Cascade)
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([workId, topicId])
+  @@index([topicId])
+}
+
+model WorkLocation {
+  id String @id @default(cuid())
+
+  workId String
+
+  landingPageUrl String?
+  pdfUrl         String?
+  isBest         Boolean  @default(false)
+  isOpenAccess   Boolean?
+
+  work Work @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@index([workId])
+}
+
+model ExtractionJob {
+  id String @id @default(cuid())
+
+  name  String
+  query String?
+
+  status ExtractionStatus @default(PENDING)
+
+  totalResults     Int @default(0)
+  processedResults Int @default(0)
+  failedResults    Int @default(0)
+  duplicateCount   Int @default(0)
+
+  errorMessage String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  works ExtractionJobWork[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ExtractionJobWork {
+  id String @id @default(cuid())
+
+  extractionJobId String
+  workId          String
+
+  extractionJob ExtractionJob @relation(fields: [extractionJobId], references: [id], onDelete: Cascade)
+  work          Work          @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([extractionJobId, workId])
+  @@index([workId])
+}
