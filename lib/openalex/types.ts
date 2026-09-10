@@ -113,7 +113,7 @@ export interface OpenAlexWork {
 
   cited_by_count?: number;
 
-  is_retracted?: boolean;
+  is_retracted?: boolean | null;
 
   open_access?: {
     is_oa?: boolean;

@@ -1,7 +1,8 @@
 export {
   extractXRPapers,
+  type XRExtractionOptions,
 } from "./extraction-service";
 
-export type {
-  ExtractionOptions,
+export {
+  XR_SEARCH_TERMS,
 } from "./extraction-service";

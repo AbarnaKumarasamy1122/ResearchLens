@@ -1,154 +1,186 @@
 import {
-  searchWorks,
+  getWorksByPage,
 } from "@/lib/openalex";
 
 import {
   deduplicateWorks,
   normalizeWorks,
-} from "@/lib/papers";
+} from "@/lib/papers/normalizer";
 
 import {
   attachWorkToExtraction,
   completeExtractionJob,
   createExtractionJob,
   failExtractionJob,
-  persistPaper,
   startExtractionJob,
-} from "@/lib/persistence";
+  updateExtractionProgress,
+} from "@/lib/persistence/extraction-repository";
 
-import type {
-  NormalizedPaper,
-} from "@/lib/papers";
+import {
+  persistPaper,
+} from "@/lib/persistence/work-repository";
 
-const XR_SEARCH_TERMS = [
+export const XR_SEARCH_TERMS = [
   "extended reality",
   "virtual reality",
   "augmented reality",
   "mixed reality",
-];
+] as const;
 
-export interface ExtractionOptions {
+export interface XRExtractionOptions {
   fromYear?: number;
   toYear?: number;
   perPage?: number;
   maxPages?: number;
 }
 
-export async function extractXRPapers(
-  options: ExtractionOptions = {}
-) {
-  const {
-    fromYear = 2020,
-    toYear = 2025,
-    perPage = 100,
-    maxPages = 10,
-  } = options;
+export interface XRExtractionResult {
+  jobId: string;
+  status: "COMPLETED";
+  totalResults: number;
+  processedResults: number;
+  failedResults: number;
+  duplicateCount: number;
+}
 
-  const job = await createExtractionJob(
-    "XR Research Papers Extraction",
-    XR_SEARCH_TERMS.join(" OR ")
-  );
+export async function extractXRPapers(
+  options: XRExtractionOptions = {},
+): Promise<XRExtractionResult> {
+  const fromYear = options.fromYear ?? 2020;
+  const toYear = options.toYear ?? 2025;
+  const perPage = Math.min(options.perPage ?? 100, 100);
+  const maxPages = Math.max(options.maxPages ?? 10, 1);
+
+  const job = await createExtractionJob({
+    name: `XR Research ${fromYear}-${toYear}`,
+    query: XR_SEARCH_TERMS.join(", "),
+  });
 
   await startExtractionJob(job.id);
 
+  const allWorks = new Map<
+    string,
+    ReturnType<typeof normalizeWorks>[number]
+  >();
+
+  let totalResults = 0;
+  let processedResults = 0;
+  let failedResults = 0;
+  let duplicateCount = 0;
+
   try {
-    const allPapers: NormalizedPaper[] = [];
-
     for (const searchTerm of XR_SEARCH_TERMS) {
-      for (
-        let page = 1;
-        page <= maxPages;
-        page++
-      ) {
-        const result =
-          await searchWorks({
-            search: searchTerm,
-            filters: {
-              fromYear,
-              toYear,
-            },
-            page,
-            perPage,
-          });
+      for (let page = 1; page <= maxPages; page++) {
+        const result = await getWorksByPage({
+          search: searchTerm,
+          filters: {
+            fromYear,
+            toYear,
+          },
+          page,
+          perPage,
+          sort: "publication_date",
+          sortDirection: "desc",
+        });
 
-        const normalized =
-          normalizeWorks(
-            result.data.results
-          );
+        const works = result.data.results ?? [];
 
-        allPapers.push(
-          ...normalized
-        );
+        totalResults += works.length;
 
-        if (
-          result.data.results.length <
-          perPage
-        ) {
+        await updateExtractionProgress(job.id, {
+          totalResults,
+        });
+
+        if (works.length === 0) {
+          break;
+        }
+
+        const normalized = normalizeWorks(works);
+        const deduplicated = deduplicateWorks(normalized);
+
+        for (const paper of deduplicated) {
+          const key =
+            paper.doi?.toLowerCase().trim() ??
+            paper.openAlexId;
+
+          if (allWorks.has(key)) {
+            duplicateCount++;
+
+            await updateExtractionProgress(job.id, {
+              duplicateCount,
+            });
+
+            continue;
+          }
+
+          allWorks.set(key, paper);
+        }
+
+        /*
+         * Stop if OpenAlex has no next page.
+         */
+        if (!result.data.meta?.next_cursor && works.length < perPage) {
           break;
         }
       }
     }
 
-    const totalFetched =
-      allPapers.length;
+    await updateExtractionProgress(job.id, {
+      totalResults,
+      duplicateCount,
+    });
 
-    /*
-     * Global deduplication across
-     * all four search terms.
-     */
-    const deduplicated =
-      deduplicateWorks(allPapers);
-
-    const duplicateCount =
-      totalFetched -
-      deduplicated.length;
-
-    let processedResults = 0;
-    let failedResults = 0;
-
-    for (const paper of deduplicated) {
+    for (const paper of allWorks.values()) {
       try {
-        const saved =
-          await persistPaper(paper);
+        const saved = await persistPaper(paper);
 
-        await attachWorkToExtraction(
-          job.id,
-          saved.id
-        );
+        if (saved) {
+          await attachWorkToExtraction(
+            job.id,
+            saved.id,
+          );
+        }
 
         processedResults++;
-      } catch {
+
+        await updateExtractionProgress(job.id, {
+          processedResults,
+          failedResults,
+          duplicateCount,
+        });
+      } catch (error) {
         failedResults++;
+
+        console.error(
+          `Failed to persist paper ${paper.openAlexId}:`,
+          error,
+        );
+
+        await updateExtractionProgress(job.id, {
+          processedResults,
+          failedResults,
+          duplicateCount,
+        });
       }
     }
 
-    await completeExtractionJob(
-      job.id,
-      {
-        totalResults:
-          deduplicated.length,
-        processedResults,
-        failedResults,
-        duplicateCount,
-      }
-    );
+    await completeExtractionJob(job.id);
 
     return {
       jobId: job.id,
-      totalFetched,
-      duplicateCount,
-      uniqueResults:
-        deduplicated.length,
+      status: "COMPLETED",
+      totalResults,
       processedResults,
       failedResults,
+      duplicateCount,
     };
   } catch (error) {
-    await failExtractionJob(
-      job.id,
+    const message =
       error instanceof Error
         ? error.message
-        : "Extraction failed"
-    );
+        : "Extraction failed";
+
+    await failExtractionJob(job.id, message);
 
     throw error;
   }

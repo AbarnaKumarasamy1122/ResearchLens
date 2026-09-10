@@ -207,7 +207,7 @@ export async function persistPaper(
           paper.landingPageUrl,
         pdfUrl: paper.pdfUrl,
         sourceId: source?.id ?? null,
-      },
+      },     
     });
 
     /*
@@ -330,7 +330,12 @@ export async function persistPaper(
     }
 
     return work;
-  });
+  },
+{
+    maxWait: 10_000,
+    timeout: 30_000,
+  },
+);
 }
 
 export async function persistPapers(
