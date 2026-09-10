@@ -1,8 +1,11 @@
 export {
+  XR_SEARCH_TERMS,
+  createXRExtractionJob,
+  processXRExtractionJob,
   extractXRPapers,
-  type XRExtractionOptions,
 } from "./extraction-service";
 
-export {
-  XR_SEARCH_TERMS,
+export type {
+  XRExtractionOptions,
+  XRExtractionResult,
 } from "./extraction-service";

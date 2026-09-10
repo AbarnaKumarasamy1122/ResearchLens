@@ -1,6 +1,4 @@
-import {
-  getWorksByPage,
-} from "@/lib/openalex";
+import { getWorksByPage } from "@/lib/openalex";
 
 import {
   deduplicateWorks,
@@ -12,13 +10,12 @@ import {
   completeExtractionJob,
   createExtractionJob,
   failExtractionJob,
+  isExtractionJobCancelled,
   startExtractionJob,
   updateExtractionProgress,
 } from "@/lib/persistence/extraction-repository";
 
-import {
-  persistPaper,
-} from "@/lib/persistence/work-repository";
+import { persistPaper } from "@/lib/persistence/work-repository";
 
 export const XR_SEARCH_TERMS = [
   "extended reality",
@@ -36,27 +33,106 @@ export interface XRExtractionOptions {
 
 export interface XRExtractionResult {
   jobId: string;
-  status: "COMPLETED";
+  status:
+    | "COMPLETED"
+    | "CANCELLED";
   totalResults: number;
   processedResults: number;
   failedResults: number;
   duplicateCount: number;
 }
 
-export async function extractXRPapers(
+function normalizeOptions(
   options: XRExtractionOptions = {},
-): Promise<XRExtractionResult> {
-  const fromYear = options.fromYear ?? 2020;
-  const toYear = options.toYear ?? 2025;
-  const perPage = Math.min(options.perPage ?? 100, 100);
-  const maxPages = Math.max(options.maxPages ?? 10, 1);
+) {
+  const fromYear =
+    options.fromYear ?? 2020;
 
-  const job = await createExtractionJob({
-    name: `XR Research ${fromYear}-${toYear}`,
-    query: XR_SEARCH_TERMS.join(", "),
+  const toYear =
+    options.toYear ?? 2025;
+
+  const perPage = Math.min(
+    Math.max(
+      options.perPage ?? 100,
+      1,
+    ),
+    100,
+  );
+
+  const maxPages = Math.min(
+    Math.max(
+      options.maxPages ?? 10,
+      1,
+    ),
+    100,
+  );
+
+  if (fromYear > toYear) {
+    throw new Error(
+      "fromYear cannot be greater than toYear",
+    );
+  }
+
+  return {
+    fromYear,
+    toYear,
+    perPage,
+    maxPages,
+  };
+}
+
+/**
+ * Create an XR extraction job without starting the extraction.
+ *
+ * The job remains PENDING until processXRExtractionJob starts it.
+ */
+export async function createXRExtractionJob(
+  options: XRExtractionOptions = {},
+) {
+  const normalizedOptions =
+    normalizeOptions(options);
+
+  return createExtractionJob({
+    name:
+      `XR Research ` +
+      `${normalizedOptions.fromYear}-` +
+      `${normalizedOptions.toYear}`,
+
+    query:
+      XR_SEARCH_TERMS.join(", "),
   });
+}
 
-  await startExtractionJob(job.id);
+/**
+ * Process an existing extraction job.
+ *
+ * This function performs the actual OpenAlex extraction,
+ * normalization, deduplication and persistence.
+ */
+export async function processXRExtractionJob(
+  jobId: string,
+  options: XRExtractionOptions = {},
+): Promise<XRExtractionResult | null> {
+  const normalizedOptions =
+    normalizeOptions(options);
+
+  const startedJob =
+    await startExtractionJob(jobId);
+
+  /*
+   * If the job could not transition from PENDING to RUNNING,
+   * another processor owns it or it was cancelled.
+   */
+  if (!startedJob) {
+    return null;
+  }
+
+  const {
+    fromYear,
+    toYear,
+    perPage,
+    maxPages,
+  } = normalizedOptions;
 
   const allWorks = new Map<
     string,
@@ -69,85 +145,223 @@ export async function extractXRPapers(
   let duplicateCount = 0;
 
   try {
-    for (const searchTerm of XR_SEARCH_TERMS) {
-      for (let page = 1; page <= maxPages; page++) {
-        const result = await getWorksByPage({
-          search: searchTerm,
-          filters: {
-            fromYear,
-            toYear,
-          },
-          page,
-          perPage,
-          sort: "publication_date",
-          sortDirection: "desc",
-        });
+    /*
+     * Check cancellation immediately after starting.
+     */
+    if (
+      await isExtractionJobCancelled(
+        jobId,
+      )
+    ) {
+      return {
+        jobId,
+        status: "CANCELLED",
+        totalResults,
+        processedResults,
+        failedResults,
+        duplicateCount,
+      };
+    }
 
-        const works = result.data.results ?? [];
+    /*
+     * Process each XR search term.
+     */
+    for (const searchTerm of XR_SEARCH_TERMS) {
+      /*
+       * Check cancellation before starting a new term.
+       */
+      if (
+        await isExtractionJobCancelled(
+          jobId,
+        )
+      ) {
+        return {
+          jobId,
+          status: "CANCELLED",
+          totalResults,
+          processedResults,
+          failedResults,
+          duplicateCount,
+        };
+      }
+
+      for (
+        let page = 1;
+        page <= maxPages;
+        page++
+      ) {
+        /*
+         * Cooperative cancellation check before every
+         * OpenAlex request.
+         */
+        if (
+          await isExtractionJobCancelled(
+            jobId,
+          )
+        ) {
+          return {
+            jobId,
+            status: "CANCELLED",
+            totalResults,
+            processedResults,
+            failedResults,
+            duplicateCount,
+          };
+        }
+
+        const result =
+          await getWorksByPage({
+            search: searchTerm,
+
+            filters: {
+              fromYear,
+              toYear,
+            },
+
+            page,
+
+            perPage,
+
+            sort: "publication_date",
+
+            sortDirection: "desc",
+          });
+
+        const works =
+          result.data.results ?? [];
 
         totalResults += works.length;
 
-        await updateExtractionProgress(job.id, {
-          totalResults,
-        });
+        await updateExtractionProgress(
+          jobId,
+          {
+            totalResults,
+            duplicateCount,
+          },
+        );
+
+        /*
+         * Check cancellation after the network request.
+         */
+        if (
+          await isExtractionJobCancelled(
+            jobId,
+          )
+        ) {
+          return {
+            jobId,
+            status: "CANCELLED",
+            totalResults,
+            processedResults,
+            failedResults,
+            duplicateCount,
+          };
+        }
 
         if (works.length === 0) {
           break;
         }
 
-        const normalized = normalizeWorks(works);
-        const deduplicated = deduplicateWorks(normalized);
+        const normalized =
+          normalizeWorks(works);
 
+        const deduplicated =
+          deduplicateWorks(normalized);
+
+        /*
+         * Remove duplicates across all search terms and pages.
+         */
         for (const paper of deduplicated) {
           const key =
-            paper.doi?.toLowerCase().trim() ??
+            paper.doi
+              ?.toLowerCase()
+              .trim() ??
             paper.openAlexId;
 
           if (allWorks.has(key)) {
             duplicateCount++;
-
-            await updateExtractionProgress(job.id, {
-              duplicateCount,
-            });
-
             continue;
           }
 
-          allWorks.set(key, paper);
+          allWorks.set(
+            key,
+            paper,
+          );
         }
 
+        await updateExtractionProgress(
+          jobId,
+          {
+            totalResults,
+            duplicateCount,
+          },
+        );
+
         /*
-         * Stop if OpenAlex has no next page.
+         * Stop when OpenAlex indicates there are no
+         * additional pages.
          */
-        if (!result.data.meta?.next_cursor && works.length < perPage) {
+        if (
+          !result.data.meta?.next_cursor &&
+          works.length < perPage
+        ) {
           break;
         }
       }
     }
 
-    await updateExtractionProgress(job.id, {
-      totalResults,
-      duplicateCount,
-    });
+    /*
+     * Final cancellation check before persistence.
+     */
+    if (
+      await isExtractionJobCancelled(
+        jobId,
+      )
+    ) {
+      return {
+        jobId,
+        status: "CANCELLED",
+        totalResults,
+        processedResults,
+        failedResults,
+        duplicateCount,
+      };
+    }
 
+    /*
+     * Persist normalized, deduplicated papers one by one.
+     */
     for (const paper of allWorks.values()) {
+      /*
+       * Check cancellation before each paper.
+       */
+      if (
+        await isExtractionJobCancelled(
+          jobId,
+        )
+      ) {
+        return {
+          jobId,
+          status: "CANCELLED",
+          totalResults,
+          processedResults,
+          failedResults,
+          duplicateCount,
+        };
+      }
+
       try {
-        const saved = await persistPaper(paper);
+        const saved =
+          await persistPaper(paper);
 
         if (saved) {
           await attachWorkToExtraction(
-            job.id,
+            jobId,
             saved.id,
           );
         }
 
         processedResults++;
-
-        await updateExtractionProgress(job.id, {
-          processedResults,
-          failedResults,
-          duplicateCount,
-        });
       } catch (error) {
         failedResults++;
 
@@ -155,19 +369,43 @@ export async function extractXRPapers(
           `Failed to persist paper ${paper.openAlexId}:`,
           error,
         );
+      }
 
-        await updateExtractionProgress(job.id, {
+      await updateExtractionProgress(
+        jobId,
+        {
+          totalResults,
           processedResults,
           failedResults,
           duplicateCount,
-        });
-      }
+        },
+      );
     }
 
-    await completeExtractionJob(job.id);
+    /*
+     * Only RUNNING jobs can become COMPLETED.
+     *
+     * If cancellation happened concurrently,
+     * this returns null and the job remains CANCELLED.
+     */
+    const completedJob =
+      await completeExtractionJob(
+        jobId,
+      );
+
+    if (!completedJob) {
+      return {
+        jobId,
+        status: "CANCELLED",
+        totalResults,
+        processedResults,
+        failedResults,
+        duplicateCount,
+      };
+    }
 
     return {
-      jobId: job.id,
+      jobId,
       status: "COMPLETED",
       totalResults,
       processedResults,
@@ -180,8 +418,46 @@ export async function extractXRPapers(
         ? error.message
         : "Extraction failed";
 
-    await failExtractionJob(job.id, message);
+    /*
+     * Do not overwrite CANCELLED with FAILED.
+     */
+    await failExtractionJob(
+      jobId,
+      message,
+    );
 
     throw error;
   }
+}
+
+/**
+ * Backward-compatible convenience function.
+ *
+ * Creates a job and processes it synchronously.
+ *
+ * This is useful for tests or server-side callers.
+ * The HTTP API should use createXRExtractionJob()
+ * + processXRExtractionJob() instead.
+ */
+export async function extractXRPapers(
+  options: XRExtractionOptions = {},
+): Promise<XRExtractionResult> {
+  const job =
+    await createXRExtractionJob(
+      options,
+    );
+
+  const result =
+    await processXRExtractionJob(
+      job.id,
+      options,
+    );
+
+  if (!result) {
+    throw new Error(
+      "Extraction job could not be started",
+    );
+  }
+
+  return result;
 }

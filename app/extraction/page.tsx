@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Papa from "papaparse";
 
@@ -35,19 +30,60 @@ interface ExtractionJob {
 
 interface ExtractionResponse {
   success: boolean;
+  message?: string;
   data: {
-    jobId: string;
-    status: string;
+    id: string;
+    name: string;
+    query: string | null;
+    status:
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
     totalResults: number;
     processedResults: number;
     failedResults: number;
     duplicateCount: number;
+    errorMessage: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
   };
 }
 
 interface JobResponse {
   success: boolean;
+  message?: string;
   data: ExtractionJob;
+}
+
+interface ExtractionHistoryJob {
+  id: string;
+  name: string;
+  query: string | null;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "COMPLETED"
+    | "FAILED"
+    | "CANCELLED";
+  totalResults: number;
+  processedResults: number;
+  failedResults: number;
+  duplicateCount: number;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface HistoryResponse {
+  success: boolean;
+  message?: string;
+  data: ExtractionHistoryJob[];
 }
 
 const DEFAULT_FROM_YEAR = 2020;
@@ -129,123 +165,93 @@ export default function ExtractionPage() {
   );
 
   const [perPage, setPerPage] = useState(100);
+
   const [maxPages, setMaxPages] = useState(10);
 
   const [job, setJob] =
     useState<ExtractionJob | null>(null);
 
-  const [loading, setLoading] =
-    useState(false);
+  const [history, setHistory] = useState<
+    ExtractionHistoryJob[]
+  >([]);
+
+  const [loading, setLoading] = useState(false);
 
   const [loadingJob, setLoadingJob] =
     useState(false);
 
-  const [error, setError] =
+  const [loadingHistory, setLoadingHistory] =
+    useState(false);
+
+  const [actionJobId, setActionJobId] =
     useState<string | null>(null);
+
+  const [error, setError] = useState<string | null>(
+    null,
+  );
 
   const [searchDataset, setSearchDataset] =
     useState("");
 
-  const [currentPage, setCurrentPage] =
-    useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const pageSize = DEFAULT_PAGE_SIZE;
 
   /*
-   * Start a new extraction.
+   * Load extraction history.
    */
-  const startExtraction = useCallback(
-    async () => {
-      setLoading(true);
-      setError(null);
+  const loadHistory = useCallback(async () => {
+    try {
+      setLoadingHistory(true);
+
+      const response = await fetch(
+        "/api/extraction?limit=20",
+        {
+          cache: "no-store",
+        },
+      );
+
+      let body: unknown;
 
       try {
-        const response = await fetch(
-          "/api/extraction",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-            body: JSON.stringify({
-              fromYear,
-              toYear,
-              perPage,
-              maxPages,
-            }),
-          },
-        );
-
-        let body: unknown;
-
-        try {
-          body = await response.json();
-        } catch {
-          body = null;
-        }
-
-        if (!response.ok) {
-          throw new Error(
-            typeof body === "object" &&
-              body !== null &&
-              "message" in body &&
-              typeof body.message === "string"
-              ? body.message
-              : "Extraction failed",
-          );
-        }
-
-        const result =
-          body as ExtractionResponse;
-
-        setJob({
-          id: result.data.jobId,
-          name: `XR Research ${fromYear}-${toYear}`,
-          query:
-            "extended reality, virtual reality, augmented reality, mixed reality",
-          status:
-            result.data.status as ExtractionJob["status"],
-          totalResults:
-            result.data.totalResults,
-          processedResults:
-            result.data.processedResults,
-          failedResults:
-            result.data.failedResults,
-          duplicateCount:
-            result.data.duplicateCount,
-          errorMessage: null,
-          startedAt: null,
-          completedAt: null,
-          createdAt:
-            new Date().toISOString(),
-          updatedAt:
-            new Date().toISOString(),
-          papers: [],
-        });
-
-        setCurrentPage(1);
-        setSearchDataset("");
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Extraction failed",
-        );
-      } finally {
-        setLoading(false);
+        body = await response.json();
+      } catch {
+        body = null;
       }
-    },
-    [
-      fromYear,
-      toYear,
-      perPage,
-      maxPages,
-    ],
-  );
+
+      if (!response.ok) {
+        throw new Error(
+          typeof body === "object" &&
+            body !== null &&
+            "message" in body &&
+            typeof body.message === "string"
+            ? body.message
+            : "Failed to load extraction history",
+        );
+      }
+
+      const result = body as HistoryResponse;
+
+      if (!result.success) {
+        throw new Error(
+          result.message ??
+            "Failed to load extraction history",
+        );
+      }
+
+      setHistory(result.data);
+    } catch (err) {
+      console.error(
+        "Failed to load extraction history:",
+        err,
+      );
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
 
   /*
-   * Load the latest job state.
+   * Load one extraction job.
    */
   const loadJob = useCallback(
     async (jobId: string) => {
@@ -278,10 +284,18 @@ export default function ExtractionPage() {
           );
         }
 
-        const result =
-          body as JobResponse;
+        const result = body as JobResponse;
+
+        if (!result.success) {
+          throw new Error(
+            result.message ??
+              "Failed to load extraction job",
+          );
+        }
 
         setJob(result.data);
+        setCurrentPage(1);
+        setSearchDataset("");
         setError(null);
       } catch (err) {
         setError(
@@ -297,34 +311,294 @@ export default function ExtractionPage() {
   );
 
   /*
-   * Poll while extraction is running.
-   *
-   * The timer callback is asynchronous, so this does
-   * not synchronously update state inside the effect.
+   * Initial extraction history load.
    */
   useEffect(() => {
-  const jobId = job?.id;
-  const jobStatus = job?.status;
+    const timeoutId = window.setTimeout(() => {
+      void loadHistory();
+    }, 0);
 
-  if (
-    !jobId ||
-    !jobStatus ||
-    !["PENDING", "RUNNING"].includes(jobStatus)
-  ) {
-    return;
-  }
-
-  const timer = window.setInterval(() => {
-    void loadJob(jobId);
-  }, 2000);
-
-  return () => {
-    window.clearInterval(timer);
-  };
-}, [job?.id, job?.status, loadJob]);
+    return () => window.clearTimeout(timeoutId);
+  }, [loadHistory]);
 
   /*
-   * Filter the extracted dataset locally.
+   * Start a new asynchronous extraction job.
+   *
+   * The POST endpoint should return immediately
+   * with status PENDING.
+   */
+  const startExtraction = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(
+        "/api/extraction",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fromYear,
+            toYear,
+            perPage,
+            maxPages,
+          }),
+        },
+      );
+
+      let body: unknown;
+
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          typeof body === "object" &&
+            body !== null &&
+            "message" in body &&
+            typeof body.message === "string"
+            ? body.message
+            : "Failed to create extraction job",
+        );
+      }
+
+      const result =
+        body as ExtractionResponse;
+
+      if (!result.success) {
+        throw new Error(
+          result.message ??
+            "Failed to create extraction job",
+        );
+      }
+
+      const createdJob: ExtractionJob = {
+        id: result.data.id,
+        name: result.data.name,
+        query: result.data.query,
+        status: result.data.status,
+        totalResults:
+          result.data.totalResults,
+        processedResults:
+          result.data.processedResults,
+        failedResults:
+          result.data.failedResults,
+        duplicateCount:
+          result.data.duplicateCount,
+        errorMessage:
+          result.data.errorMessage,
+        startedAt: result.data.startedAt,
+        completedAt:
+          result.data.completedAt,
+        createdAt: result.data.createdAt,
+        updatedAt: result.data.updatedAt,
+        papers: [],
+      };
+
+      setJob(createdJob);
+      setCurrentPage(1);
+      setSearchDataset("");
+
+      /*
+       * Refresh history immediately so the new
+       * PENDING job appears in the history table.
+       */
+      await loadHistory();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to create extraction job",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    fromYear,
+    toYear,
+    perPage,
+    maxPages,
+    loadHistory,
+  ]);
+
+  /*
+   * Poll the selected job while it is active.
+   */
+  useEffect(() => {
+    const jobId = job?.id;
+    const jobStatus = job?.status;
+
+    if (
+      !jobId ||
+      !jobStatus ||
+      !["PENDING", "RUNNING"].includes(
+        jobStatus,
+      )
+    ) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadJob(jobId);
+      void loadHistory();
+    }, 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    job?.id,
+    job?.status,
+    loadJob,
+    loadHistory,
+  ]);
+
+  /*
+   * Cancel an active extraction job.
+   */
+  const cancelJob = useCallback(
+    async (jobId: string) => {
+      const confirmed = window.confirm(
+        "Cancel this extraction job?",
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        setActionJobId(jobId);
+        setError(null);
+
+        const response = await fetch(
+          `/api/extraction/${encodeURIComponent(
+            jobId,
+          )}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              action: "cancel",
+            }),
+          },
+        );
+
+        let body: unknown;
+
+        try {
+          body = await response.json();
+        } catch {
+          body = null;
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            typeof body === "object" &&
+              body !== null &&
+              "message" in body &&
+              typeof body.message === "string"
+              ? body.message
+              : "Failed to cancel extraction job",
+          );
+        }
+
+        /*
+         * Reload both the current job and history
+         * so the CANCELLED status appears immediately.
+         */
+        await loadJob(jobId);
+        await loadHistory();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to cancel extraction job",
+        );
+      } finally {
+        setActionJobId(null);
+      }
+    },
+    [loadJob, loadHistory],
+  );
+
+  /*
+   * Delete a completed/failed/cancelled job.
+   */
+  const deleteJob = useCallback(
+    async (jobId: string) => {
+      const confirmed = window.confirm(
+        "Delete this extraction job?\n\nThe extraction history record will be deleted. Saved research papers will remain in the database.",
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        setActionJobId(jobId);
+        setError(null);
+
+        const response = await fetch(
+          `/api/extraction/${encodeURIComponent(
+            jobId,
+          )}`,
+          {
+            method: "DELETE",
+          },
+        );
+
+        let body: unknown;
+
+        try {
+          body = await response.json();
+        } catch {
+          body = null;
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            typeof body === "object" &&
+              body !== null &&
+              "message" in body &&
+              typeof body.message === "string"
+              ? body.message
+              : "Failed to delete extraction job",
+          );
+        }
+
+        /*
+         * If the deleted job is currently selected,
+         * clear the current dataset.
+         */
+        if (job?.id === jobId) {
+          setJob(null);
+          setCurrentPage(1);
+          setSearchDataset("");
+        }
+
+        await loadHistory();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to delete extraction job",
+        );
+      } finally {
+        setActionJobId(null);
+      }
+    },
+    [job, loadHistory],
+  );
+
+  /*
+   * Filter extracted dataset locally.
    */
   const filteredPapers = useMemo(() => {
     const query =
@@ -362,10 +636,7 @@ export default function ExtractionPage() {
         return searchable.includes(query);
       },
     );
-  }, [
-    job?.papers,
-    searchDataset,
-  ]);
+  }, [job?.papers, searchDataset]);
 
   /*
    * Dataset pagination.
@@ -377,10 +648,6 @@ export default function ExtractionPage() {
     ),
   );
 
-  /*
-   * Instead of calling setCurrentPage() from an effect,
-   * derive a safe page value.
-   */
   const safeCurrentPage = Math.min(
     currentPage,
     totalDatasetPages,
@@ -400,8 +667,14 @@ export default function ExtractionPage() {
     pageSize,
   ]);
 
+  /*
+   * Export JSON.
+   */
   function exportJSON() {
-    if (!job || job.papers.length === 0) {
+    if (
+      !job ||
+      job.papers.length === 0
+    ) {
       return;
     }
 
@@ -416,8 +689,14 @@ export default function ExtractionPage() {
     );
   }
 
+  /*
+   * Export CSV.
+   */
   function exportCSV() {
-    if (!job || job.papers.length === 0) {
+    if (
+      !job ||
+      job.papers.length === 0
+    ) {
       return;
     }
 
@@ -434,6 +713,9 @@ export default function ExtractionPage() {
     );
   }
 
+  /*
+   * Progress percentage.
+   */
   const progress =
     job && job.totalResults > 0
       ? Math.min(
@@ -451,7 +733,6 @@ export default function ExtractionPage() {
   return (
     <main className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-
         {/* Header */}
         <header>
           <p className="text-sm font-medium uppercase tracking-wide text-gray-500">
@@ -463,10 +744,11 @@ export default function ExtractionPage() {
           </h1>
 
           <p className="mt-3 max-w-3xl text-gray-600">
-            Extract, normalize, deduplicate, inspect,
-            and export research papers related to
-            Extended Reality, Virtual Reality,
-            Augmented Reality, and Mixed Reality.
+            Extract, normalize, deduplicate,
+            inspect, and export research papers
+            related to Extended Reality, Virtual
+            Reality, Augmented Reality, and Mixed
+            Reality.
           </p>
         </header>
 
@@ -477,7 +759,6 @@ export default function ExtractionPage() {
           </h2>
 
           <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-
             <label className="block">
               <span className="text-sm font-medium">
                 From year
@@ -530,9 +811,17 @@ export default function ExtractionPage() {
                 }
                 className="mt-2 w-full rounded-lg border px-3 py-2"
               >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
+                <option value={25}>
+                  25
+                </option>
+
+                <option value={50}>
+                  50
+                </option>
+
+                <option value={100}>
+                  100
+                </option>
               </select>
             </label>
 
@@ -586,13 +875,20 @@ export default function ExtractionPage() {
             disabled={
               loading ||
               loadingJob ||
+              ["PENDING", "RUNNING"].includes(
+                job?.status ?? "",
+              ) ||
               fromYear > toYear
             }
             className="mt-6 rounded-lg bg-black px-5 py-3 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading
               ? "Starting extraction..."
-              : "Start XR Extraction"}
+              : job?.status === "RUNNING"
+                ? "Extraction Running..."
+                : job?.status === "PENDING"
+                  ? "Extraction Pending..."
+                  : "Start XR Extraction"}
           </button>
 
           {fromYear > toYear && (
@@ -613,14 +909,23 @@ export default function ExtractionPage() {
             <p className="mt-1 text-sm text-red-700">
               {error}
             </p>
+
+            <button
+              type="button"
+              onClick={() =>
+                setError(null)
+              }
+              className="mt-3 text-sm font-medium text-red-800 underline"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
-        {/* Job progress */}
+        {/* Current Job */}
         {job && (
           <section className="mt-8">
             <div className="rounded-2xl border bg-white p-6">
-
               <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                 <div>
                   <p className="text-sm text-gray-500">
@@ -630,6 +935,10 @@ export default function ExtractionPage() {
                   <h2 className="mt-1 text-xl font-semibold">
                     {job.name}
                   </h2>
+
+                  <p className="mt-1 text-xs text-gray-400">
+                    Job ID: {job.id}
+                  </p>
                 </div>
 
                 <StatusBadge
@@ -668,25 +977,26 @@ export default function ExtractionPage() {
 
                 <Metric
                   label="Processed"
-                  value={
-                    job.processedResults
-                  }
+                  value={job.processedResults}
                 />
 
                 <Metric
                   label="Duplicates"
-                  value={
-                    job.duplicateCount
-                  }
+                  value={job.duplicateCount}
                 />
 
                 <Metric
                   label="Failed"
-                  value={
-                    job.failedResults
-                  }
+                  value={job.failedResults}
                 />
               </div>
+
+              {job.status === "PENDING" && (
+                <p className="mt-5 text-sm text-yellow-700">
+                  The extraction job has been
+                  created and is waiting to start.
+                </p>
+              )}
 
               {job.status === "RUNNING" && (
                 <p className="mt-5 text-sm text-gray-500">
@@ -696,23 +1006,259 @@ export default function ExtractionPage() {
                 </p>
               )}
 
+              {job.status === "CANCELLED" && (
+                <p className="mt-5 text-sm text-gray-600">
+                  This extraction job was cancelled.
+                </p>
+              )}
+
+              {job.status === "COMPLETED" && (
+                <p className="mt-5 text-sm text-green-700">
+                  Extraction completed successfully.
+                </p>
+              )}
+
               {job.errorMessage && (
                 <div className="mt-5 rounded-lg bg-red-50 p-4 text-sm text-red-700">
                   {job.errorMessage}
                 </div>
               )}
+
+              {/* Current job actions */}
+              {(job.status === "PENDING" ||
+                job.status === "RUNNING") && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void cancelJob(job.id)
+                  }
+                  disabled={
+                    actionJobId === job.id
+                  }
+                  className="mt-5 rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {actionJobId === job.id
+                    ? "Cancelling..."
+                    : "Cancel Extraction"}
+                </button>
+              )}
             </div>
           </section>
         )}
+
+        {/* Extraction History */}
+        <section className="mt-8">
+          <div className="rounded-2xl border bg-white">
+            <div className="border-b p-6">
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div>
+                  <h2 className="text-xl font-semibold">
+                    Extraction History
+                  </h2>
+
+                  <p className="mt-1 text-sm text-gray-500">
+                    View and manage previous
+                    extraction jobs.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void loadHistory()
+                  }
+                  disabled={loadingHistory}
+                  className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {loadingHistory
+                    ? "Refreshing..."
+                    : "Refresh"}
+                </button>
+              </div>
+            </div>
+
+            {history.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-500">
+                No extraction jobs yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="border-b bg-gray-50">
+                    <tr>
+                      <th className="px-5 py-3 font-medium">
+                        Job
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Status
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Results
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Processed
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Duplicates
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Failed
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Created
+                      </th>
+
+                      <th className="px-5 py-3 font-medium">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {history.map((item) => {
+                      const isActive =
+                        item.status ===
+                          "PENDING" ||
+                        item.status ===
+                          "RUNNING";
+
+                      const isCurrent =
+                        job?.id === item.id;
+
+                      return (
+                        <tr
+                          key={item.id}
+                          className={`border-b last:border-0 ${
+                            isCurrent
+                              ? "bg-gray-50"
+                              : ""
+                          }`}
+                        >
+                          <td className="px-5 py-4">
+                            <p className="font-medium">
+                              {item.name}
+                            </p>
+
+                            <p className="mt-1 max-w-xs truncate text-xs text-gray-500">
+                              {item.query ??
+                                "XR extraction"}
+                            </p>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <StatusBadge
+                              status={
+                                item.status
+                              }
+                            />
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {item.totalResults.toLocaleString()}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {item.processedResults.toLocaleString()}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {item.duplicateCount.toLocaleString()}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {item.failedResults.toLocaleString()}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-gray-500">
+                            {new Date(
+                              item.createdAt,
+                            ).toLocaleString()}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void loadJob(
+                                    item.id,
+                                  )
+                                }
+                                disabled={
+                                  loadingJob
+                                }
+                                className="rounded-lg border px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                              >
+                                {isCurrent
+                                  ? "Selected"
+                                  : "View"}
+                              </button>
+
+                              {isActive && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void cancelJob(
+                                      item.id,
+                                    )
+                                  }
+                                  disabled={
+                                    actionJobId ===
+                                    item.id
+                                  }
+                                  className="rounded-lg border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                >
+                                  {actionJobId ===
+                                  item.id
+                                    ? "Cancelling..."
+                                    : "Cancel"}
+                                </button>
+                              )}
+
+                              {!isActive && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void deleteJob(
+                                      item.id,
+                                    )
+                                  }
+                                  disabled={
+                                    actionJobId ===
+                                    item.id
+                                  }
+                                  className="rounded-lg border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                >
+                                  {actionJobId ===
+                                  item.id
+                                    ? "Deleting..."
+                                    : "Delete"}
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
 
         {/* Dataset */}
         {job?.status === "COMPLETED" && (
           <section className="mt-8">
             <div className="rounded-2xl border bg-white">
-
               <div className="border-b p-6">
                 <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
-
                   <div>
                     <h2 className="text-xl font-semibold">
                       Extracted Dataset
@@ -728,7 +1274,11 @@ export default function ExtractionPage() {
                     <button
                       type="button"
                       onClick={exportCSV}
-                      className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-gray-50"
+                      disabled={
+                        job.papers.length ===
+                        0
+                      }
+                      className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Export CSV
                     </button>
@@ -736,7 +1286,11 @@ export default function ExtractionPage() {
                     <button
                       type="button"
                       onClick={exportJSON}
-                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
+                      disabled={
+                        job.papers.length ===
+                        0
+                      }
+                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Export JSON
                     </button>
@@ -759,9 +1313,11 @@ export default function ExtractionPage() {
                 </div>
               </div>
 
-              {paginatedPapers.length === 0 ? (
+              {paginatedPapers.length ===
+              0 ? (
                 <div className="p-10 text-center text-gray-500">
-                  No papers match the current search.
+                  No papers match the current
+                  search.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -826,10 +1382,14 @@ export default function ExtractionPage() {
                                 {paper.authors
                                   .slice(0, 3)
                                   .map(
-                                    (author) =>
+                                    (
+                                      author,
+                                    ) =>
                                       author.name,
                                   )
-                                  .join(", ") ||
+                                  .join(
+                                    ", ",
+                                  ) ||
                                   "Unknown"}
                               </span>
                             </td>
@@ -860,7 +1420,6 @@ export default function ExtractionPage() {
               {/* Dataset pagination */}
               {filteredPapers.length > 0 && (
                 <div className="flex items-center justify-between border-t p-5">
-
                   <p className="text-sm text-gray-500">
                     Page {safeCurrentPage} of{" "}
                     {totalDatasetPages}
@@ -873,11 +1432,12 @@ export default function ExtractionPage() {
                         safeCurrentPage <= 1
                       }
                       onClick={() =>
-                        setCurrentPage((page) =>
-                          Math.max(
-                            1,
-                            page - 1,
-                          ),
+                        setCurrentPage(
+                          (page) =>
+                            Math.max(
+                              1,
+                              page - 1,
+                            ),
                         )
                       }
                       className="rounded-lg border px-3 py-2 text-sm disabled:opacity-40"
@@ -892,11 +1452,12 @@ export default function ExtractionPage() {
                         totalDatasetPages
                       }
                       onClick={() =>
-                        setCurrentPage((page) =>
-                          Math.min(
-                            totalDatasetPages,
-                            page + 1,
-                          ),
+                        setCurrentPage(
+                          (page) =>
+                            Math.min(
+                              totalDatasetPages,
+                              page + 1,
+                            ),
                         )
                       }
                       className="rounded-lg border px-3 py-2 text-sm disabled:opacity-40"
